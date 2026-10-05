@@ -1,0 +1,24 @@
+# Kredensial & data sensitif
+config.toml
+accounts.txt
+input_login.txt
+proxies.txt
+
+# Data runtime
+data/
+*.log
+*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
