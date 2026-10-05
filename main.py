@@ -295,6 +295,64 @@ def cmd_progress_sync():
     console.print(f"[dim]Diproses: {total}/{st.get('target','?')} | "
                   f"Resume dengan: ./run.sh pipeline --resume[/]")
 
+async def cmd_claim_credits(limit: int = None, use_cli: bool = False):
+    """Cek campaign (klaim 100 Credits/hari) untuk akun di accounts.txt.
+
+    Catatan: campaign diedarkan bertahap; hanya akun dengan showCampaign=true
+    yang bisa klaim. Klaim sendiri dijalankan via Qoder CLI (/claim).
+    """
+    from src.credits import check_campaign_for_account, claim_via_cli, find_cli
+    from src.login import load_accounts
+    from rich.table import Table
+    from rich import box
+
+    accounts = load_accounts(OUTPUT_TXT)
+    if limit:
+        accounts = accounts[:limit]
+    if not accounts:
+        console.print("[yellow]Tidak ada akun di accounts.txt[/]")
+        return
+
+    console.print(f"[cyan]Mengecek campaign untuk {len(accounts)} akun...[/]")
+    t = Table(box=box.ROUNDED, title="Qoder Daily Credits Campaign")
+    t.add_column("Email", style="cyan", overflow="fold")
+    t.add_column("showCampaign", style="white")
+    t.add_column("claimable", style="white")
+    t.add_column("URL", style="dim", overflow="fold")
+
+    claimable = []
+    for i, a in enumerate(accounts, 1):
+        console.print(f"[dim]({i}/{len(accounts)}) {a['email']}[/]")
+        r = await check_campaign_for_account(a["email"], a.get("password", ""), console=console)
+        sc = r.get("showCampaign")
+        cl = r.get("claimable")
+        t.add_row(a["email"],
+                  "[green]yes[/]" if sc else ("no" if sc is False else "[red]err[/]"),
+                  "[green]YES[/]" if cl else ("no" if cl is False else "-"),
+                  (r.get("campaignUrl") or "")[:40])
+        if cl:
+            claimable.append((a, r))
+
+    console.print(t)
+    console.print(f"[bold]Claimable: [green]{len(claimable)}[/] dari {len(accounts)} akun[/]")
+
+    if not claimable:
+        console.print("[dim]Tidak ada campaign aktif. Coba lagi nanti (campaign diedarkan bertahap).[/]")
+        return
+
+    if use_cli:
+        cli = find_cli()
+        if not cli:
+            console.print("[red]qodercli tidak ditemukan; tidak bisa auto-claim[/]")
+            return
+        for a, r in claimable:
+            pat = a.get("pat", "")
+            res = claim_via_cli(pat, cli)
+            console.print(f"  {a['email']}: {res.get('output', res.get('error'))[:150]}")
+
+def cmd_claim_credits_sync(limit: int = None, use_cli: bool = False):
+    asyncio.run(cmd_claim_credits(limit, use_cli))
+
 async def cmd_verify_renew(renew: bool = False, headless: bool = True):
     """Verifikasi semua PAT; opsional renew yang mati."""
     from src.renew import verify_pat, renew_pat
@@ -729,6 +787,11 @@ def main():
     p_verify = subparsers.add_parser("verify", help="Verifikasi semua PAT (opsional renew yang mati)")
     p_verify.add_argument("--renew", action="store_true", help="Renew PAT yang invalid via login Qoder")
 
+    # claim-credits (campaign 100 credits/hari)
+    p_cc = subparsers.add_parser("claim-credits", help="Cek campaign & klaim 100 Credits/hari")
+    p_cc.add_argument("-n", "--limit", type=int, default=None, help="Cek N akun pertama saja")
+    p_cc.add_argument("--cli", action="store_true", help="Auto-claim via Qoder CLI bila claimable")
+
     args = parser.parse_args()
 
     banner()
@@ -758,6 +821,8 @@ def main():
         cmd_health_sync(args.model)
     elif args.command == "verify":
         cmd_verify_renew_sync(args.renew)
+    elif args.command == "claim-credits":
+        cmd_claim_credits_sync(args.limit, args.cli)
     else:
         # Tampilkan menu interaktif
         table = Table(box=box.ROUNDED)
@@ -775,6 +840,7 @@ def main():
         table.add_row("python main.py health", "Health check end-to-end (test chat nyata)")
         table.add_row("python main.py progress", "Status batch terakhir (resume state)")
         table.add_row("python main.py verify --renew", "Cek & renew PAT yang invalid")
+        table.add_row("python main.py claim-credits", "Cek campaign & klaim 100 Credits/hari")
         console.print(table)
 
 if __name__ == "__main__":
