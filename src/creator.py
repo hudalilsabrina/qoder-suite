@@ -4,7 +4,7 @@ from typing import Optional, Dict, Any
 from playwright.async_api import Page, async_playwright
 from rich.console import Console
 
-from .config import QODER_BASE, ACCOUNTS_JSONL, OUTPUT_TXT, CAPTCHA_ATTEMPTS
+from .config import QODER_BASE, ACCOUNTS_JSONL, OUTPUT_TXT, CAPTCHA_ATTEMPTS, REFERRAL_CODE
 from .utils import write_log, generate_password, save_jsonl, append_account_txt, generate_machine_id, log_event
 from .tempmail import TempikClient
 from .proxy import ProxyPool
@@ -12,6 +12,64 @@ from .stealth import create_stealth_context, launch_stealth_browser
 from .captcha import solve_slider_local
 from .pat import PATManager
 from .claim import CosyEngine
+
+
+def _referral_hook_js(code: str) -> str:
+    """JS: paksa invitation_code + attribution di request POST /api/v1/users.
+
+    Form web Qoder kadang tidak mengirim invitation_code walau URL punya
+    ?referral_code= -> trial + 300 credits tidak diberikan. Hook ini
+    menyuntikkan field tersebut ke body/query request registrasi.
+    """
+    return """(() => {
+    const RC = %r;
+    // 1) Simpan referral code agar bisa dibaca app
+    try {
+        const q = new URLSearchParams(location.search);
+        if (!q.get('referral_code')) q.set('referral_code', RC);
+        if (!q.get('invitation_code')) q.set('invitation_code', RC);
+        // set localStorage attribution (dipakai beberapa jalur)
+        try { localStorage.setItem('qoder_referral_code', RC); } catch(e){}
+    } catch(e) {}
+
+    // 2) Patch fetch: paksa invitation_code + attribution di /api/v1/users
+    const _fetch = window.fetch;
+    window.fetch = function(input, init) {
+        try {
+            const url = (typeof input === 'string') ? input : (input && input.url) || '';
+            const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+            if (url.indexOf('/api/v1/users') !== -1 && method === 'POST') {
+                let body = (init && init.body) || '';
+                // body bisa URLSearchParams / string / JSON
+                let params = new URLSearchParams(typeof body === 'string' ? body : '');
+                if (!params.get('invitation_code')) params.set('invitation_code', RC);
+                if (!params.get('attribution')) params.set('attribution', JSON.stringify({invited_by_code: RC, url_referral_code: RC}));
+                if (!params.get('channel_ref')) params.set('channel_ref', RC);
+                init = init || {};
+                init.body = params.toString();
+                init.headers = Object.assign({}, init.headers, {'Content-Type': 'application/x-www-form-urlencoded'});
+            }
+        } catch(e) {}
+        return _fetch.call(this, input, init);
+    };
+
+    // 3) Patch XHR juga (fallback)
+    const _open = XMLHttpRequest.prototype.open;
+    const _send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function(m, u) { this.__m = m; this.__u = u; return _open.apply(this, arguments); };
+    XMLHttpRequest.prototype.send = function(body) {
+        try {
+            if (this.__u && String(this.__u).indexOf('/api/v1/users') !== -1 && String(this.__m).toUpperCase() === 'POST') {
+                let params = new URLSearchParams(typeof body === 'string' ? body : '');
+                if (!params.get('invitation_code')) params.set('invitation_code', RC);
+                if (!params.get('attribution')) params.set('attribution', JSON.stringify({invited_by_code: RC, url_referral_code: RC}));
+                body = params.toString();
+            }
+        } catch(e) {}
+        return _send.call(this, body);
+    };
+})()""" % code
+
 
 class CreatorManager:
     """Manages full signup -> OTP -> PAT -> Claim flow."""
@@ -44,12 +102,22 @@ class CreatorManager:
             c.print("  [dim]Step 2: Menjalankan stealth Chromium...[/]")
             browser = await launch_stealth_browser(p, proxy, self.headless)
             context = await create_stealth_context(browser, proxy)
+
+            # Hook: PAKSA invitation_code + attribution masuk ke POST /api/v1/users
+            # (form web Qoder tidak selalu mengirimnya walau URL punya ?referral_code=)
+            if REFERRAL_CODE:
+                await context.add_init_script(_referral_hook_js(REFERRAL_CODE))
+
             page = await context.new_page()
 
             try:
-                # 3. Open signup
+                # 3. Open signup (pakai referral code bila ada -> dapat Pro trial + 300 credits)
                 c.print("  [dim]Step 3: Membuka form registrasi...[/]")
-                await page.goto(f"{QODER_BASE}/users/sign-up", wait_until="domcontentloaded", timeout=60000)
+                signup_url = f"{QODER_BASE}/users/sign-up"
+                if REFERRAL_CODE:
+                    signup_url += f"?referral_code={REFERRAL_CODE}"
+                    c.print(f"  [cyan]i[/] Pakai referral code: {REFERRAL_CODE[:12]}... (invitation_code dipaksa ke API)")
+                await page.goto(signup_url, wait_until="domcontentloaded", timeout=60000)
                 await page.wait_for_timeout(4000)
 
                 # 4. Fill name + email
@@ -143,9 +211,37 @@ class CreatorManager:
 
                 c.print(f"  [green]OK[/] PAT Berhasil: [bold green]{pat_token[:16]}...[/]" if pat_token else "  [dim]PAT: (kosong)[/]")
 
-                # Step 5b: Coba trigger claim trial onboarding via web session jika ada button / endpoint
+                # Step 5b: Dwell manusiawi — biar sistem deteksi "user asli"
+                # (hipotesis: trial Pro diberikan ke akun yang perilakunya organik)
                 try:
-                    c.print("  [dim]Step 5b: Triggering web onboarding trial / claim...[/]")
+                    c.print("  [dim]Step 5b: Dwell manusiawi (mouse/scroll/jeda)...[/]")
+                    import random as _r
+                    await page.mouse.move(_r.randint(200, 800), _r.randint(150, 500))
+                    for _ in range(_r.randint(3, 6)):
+                        await page.mouse.move(_r.randint(100, 1100), _r.randint(100, 600),
+                                              steps=_r.randint(8, 20))
+                        await page.wait_for_timeout(_r.randint(600, 1800))
+                        await page.evaluate(f"window.scrollBy(0, {_r.randint(80, 300)})")
+                        await page.wait_for_timeout(_r.randint(400, 1200))
+                    # jeda organik sebelum lanjut
+                    await page.wait_for_timeout(_r.randint(4000, 9000))
+                    # buka halaman usage/pricing seperti user asli (memicu evaluation)
+                    for path in ["/pricing", "/account/usage"]:
+                        try:
+                            await page.goto(f"https://qoder.com{path}",
+                                            wait_until="domcontentloaded", timeout=20000)
+                            await page.wait_for_timeout(_r.randint(2500, 5000))
+                            await page.mouse.move(_r.randint(300, 900), _r.randint(200, 500),
+                                                  steps=_r.randint(10, 25))
+                        except Exception:
+                            pass
+                    c.print("  [dim]  dwell selesai[/]")
+                except Exception:
+                    pass
+
+                # Step 5c: Coba trigger claim trial onboarding via web session
+                try:
+                    c.print("  [dim]Step 5c: Triggering web onboarding trial / claim...[/]")
                     await page.evaluate('''async () => {
                         try {
                             await fetch('/api/v1/me/trial', { method: 'POST', credentials: 'include' });

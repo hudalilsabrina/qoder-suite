@@ -34,12 +34,13 @@ def get_cfg(section, key, default=None):
     return cfg.get(section, {}).get(key, default)
 
 # Global settings
-# Semua nilai default diambil dari config.toml / environment variable.
-# Tidak ada kredensial yang di-hardcode di sini.
-TEMPIK_BASE = os.getenv("TEMPIK_BASE", get_cfg("api", "tempmail_base", ""))
+TEMPIK_BASE = os.getenv("TEMPIK_BASE", get_cfg("api", "tempmail_base", "https://mail.xentranetwork.me/api"))
 QODER_BASE = "https://qoder.com"
+# Referral code -> signup DENGAN referral dapat "free Pro trial + 300 Credits".
+# Tanpa referral = free tier biasa (trial rate ~0.8%).
+REFERRAL_CODE = os.getenv("QODER_REFERRAL_CODE", get_cfg("qoder", "referral_code", ""))
 NINE_ROUTER_URL = os.getenv("NINEROUTER_URL", get_cfg("router", "url", "http://localhost:20127/dashboard/providers/qoder"))
-NINE_ROUTER_PASS = os.getenv("NINEROUTER_PASS", get_cfg("router", "password", ""))
+NINE_ROUTER_PASS = os.getenv("NINEROUTER_PASS", get_cfg("router", "password", "Arinata123#"))
 
 HEADLESS = os.getenv("QODER_HEADLESS", str(get_cfg("general", "headless", True))).lower() in ("true", "1", "yes")
 CAPTCHA_ATTEMPTS = int(os.getenv("CAPTCHA_ATTEMPTS", get_cfg("general", "captcha_attempts", 5)))
