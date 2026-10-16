@@ -204,15 +204,20 @@ class CreatorManager:
             finally:
                 await context.close()
 
-        if browser is not None:
-            exec_res = await _run_with_browser(browser)
-        else:
-            async with async_playwright() as p:
-                b = await launch_stealth_browser(p, proxy, self.headless)
-                try:
-                    exec_res = await _run_with_browser(b)
-                finally:
-                    await b.close()
+        try:
+            if browser is not None:
+                exec_res = await _run_with_browser(browser)
+            else:
+                async with async_playwright() as p:
+                    b = await launch_stealth_browser(p, proxy, self.headless)
+                    try:
+                        exec_res = await _run_with_browser(b)
+                    finally:
+                        await b.close()
+        except Exception as e:
+            c.print(f"  [red]FAIL[/] Akun #{idx} error: {e}")
+            write_log(f"[{idx}] Exception: {e}", "ERROR")
+            return None
 
         if not exec_res:
             return None

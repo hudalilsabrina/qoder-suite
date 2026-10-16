@@ -45,7 +45,10 @@ async def cmd_create(count: int, headless: bool, auto_claim: bool):
         browser = await launch_stealth_browser(p, headless=headless)
         try:
             for i in range(count):
-                await manager.create_account(idx=i+1, auto_claim_bonus=auto_claim, browser=browser)
+                try:
+                    await manager.create_account(idx=i+1, auto_claim_bonus=auto_claim, browser=browser)
+                except Exception as e:
+                    console.print(f"  [red]Error pada akun #{i+1}: {e}[/]")
                 if i < count - 1:
                     await asyncio.sleep(2)
         finally:
