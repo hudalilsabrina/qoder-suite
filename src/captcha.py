@@ -194,42 +194,28 @@ async def solve_slider_local(page, max_attempts: int = 10, console: Console = No
 
 
 async def _is_solved(page) -> bool:
-    """Deteksi apakah captcha sudah solved."""
+    """Deteksi apakah captcha benar-benar solved dan berpindah ke step OTP."""
     try:
-        # Check body text
-        body = await page.evaluate(
-            "() => document.body ? document.body.innerText.toLowerCase().substring(0,500) : ''"
-        )
-        if "verified" in body or "success" in body:
+        # 1. Pastikan page sudah berpindah ke step OTP (Verify your email)
+        has_otp_step = await page.evaluate("""() => {
+            const txt = document.body ? document.body.innerText.toLowerCase() : '';
+            if (txt.includes('verify your email') || txt.includes('enter the code sent')) return true;
+            // Atau ada input baru untuk OTP
+            const inputs = Array.from(document.querySelectorAll('input[type="text"]'));
+            if (inputs.some(i => i.offsetParent !== null && !i.id.includes('firstName') && !i.id.includes('lastName'))) return true;
+            return false;
+        }""")
+        if has_otp_step:
             return True
 
-        # Check wrapper visibility — jika hidden, captcha solved
-        wv = await page.evaluate(
-            "() => { const w=document.querySelector('#aliyunCaptcha-captcha-wrapper');"
-            " return w ? w.offsetParent !== null : false; }"
-        )
-        if not wv:
+        # 2. Check checkmark icon atau success indicator
+        has_success_icon = await page.evaluate("""() => {
+            const ci = document.querySelector('#aliyunCaptcha-check-icon, .aliyunCaptcha-success, [class*="captcha-success"]');
+            return ci && ci.offsetParent !== null;
+        }""")
+        if has_success_icon:
             return True
 
-        # Check slider — jika hilang setelah solve, captcha solved
-        slider_visible = await page.evaluate(
-            "() => { const s=document.querySelector('#aliyunCaptcha-sliding-slider');"
-            " return s && s.offsetParent !== null; }"
-        )
-        if not slider_visible:
-            return True
-
-        # Check success class on slider/captcha-body
-        cls = await page.evaluate(
-            "() => {"
-            " const s=document.querySelector('#aliyunCaptcha-sliding-slider');"
-            " const c=document.querySelector('#aliyunCaptcha-captcha-body');"
-            " const ci=document.querySelector('#aliyunCaptcha-check-icon, [class*=success], [class*=pass]');"
-            " if(ci&&ci.offsetParent!==null)return true;"
-            " if(s&&(s.className.includes('success')||s.className.includes('pass')))return true;"
-            " if(c&&(c.className.includes('success')||c.className.includes('pass')))return true;"
-            " return false; }"
-        )
-        return bool(cls)
+        return False
     except Exception:
         return False

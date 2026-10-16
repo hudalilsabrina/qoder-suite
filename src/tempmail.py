@@ -113,12 +113,13 @@ class TempikClient:
         if not addr:
             raise ValueError("No email address provided")
 
+        sid = self.session_id or self.init_session()
+
         url = f"{self.base_url}/inboxes/{addr}/messages"
         req = urllib.request.Request(url, method="GET")
         req.add_header("Accept", "application/json")
         req.add_header("User-Agent", _BROWSER_UA)
-        if self.session_id:
-            req.add_header("x-session-id", self.session_id)
+        req.add_header("x-session-id", sid)
 
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode())
@@ -128,8 +129,8 @@ class TempikClient:
     async def wait_for_messages(
         self,
         address: str = None,
-        max_wait: int = 150,
-        interval: int = 5,
+        max_wait: int = 45,
+        interval: int = 2,
     ) -> List[Dict[str, Any]]:
         """Poll for messages until one arrives or timeout."""
         addr = address or self._email

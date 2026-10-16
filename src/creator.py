@@ -82,7 +82,7 @@ class CreatorManager:
         self.console = console or Console()
         self.cosy = CosyEngine()
 
-    async def create_account(self, idx: int = 1, auto_claim_bonus: bool = True) -> Optional[Dict[str, Any]]:
+    async def create_account(self, idx: int = 1, auto_claim_bonus: bool = True, browser=None) -> Optional[Dict[str, Any]]:
         proxy = self.proxy_pool.next() if self.proxy_pool else None
         c = self.console
 
@@ -101,20 +101,17 @@ class CreatorManager:
         c.print(f"  [green]OK[/] Email   : [bold cyan]{email}[/]")
         c.print(f"  [green]OK[/] Password: [bold yellow]{password}[/]")
 
-        async with async_playwright() as p:
-            c.print("  [dim]Step 2: Menjalankan stealth Chromium...[/]")
-            browser = await launch_stealth_browser(p, proxy, self.headless)
-            context = await create_stealth_context(browser, proxy)
+        async def _run_with_browser(b):
+            c.print("  [dim]Step 2: Menggunakan stealth browser context...[/]")
+            context = await create_stealth_context(b, proxy)
 
-            # Hook: PAKSA invitation_code + attribution masuk ke POST /api/v1/users
-            # (form web Qoder tidak selalu mengirimnya walau URL punya ?referral_code=)
             if REFERRAL_CODE:
                 await context.add_init_script(_referral_hook_js(REFERRAL_CODE))
 
             page = await context.new_page()
 
             try:
-                # 3. Open signup (pakai referral code bila ada -> dapat Pro trial + 300 credits)
+                # 3. Open signup
                 c.print("  [dim]Step 3: Membuka form registrasi...[/]")
                 signup_url = f"{QODER_BASE}/users/sign-up"
                 if REFERRAL_CODE:
@@ -128,53 +125,44 @@ class CreatorManager:
                 await page.fill("#basic_lastName", "User")
                 await page.fill("#basic_email", email)
 
-                cb = await page.query_selector("input[type=checkbox]")
-                if cb:
-                    try:
-                        await cb.check(force=True)
-                    except Exception:
-                        pass
-
                 for cbox in await page.query_selector_all("input[type=checkbox]"):
                     try:
                         await cbox.check(force=True)
                     except Exception:
                         pass
 
-                continue_btn = await page.query_selector("button:has-text('Continue')")
-                if continue_btn:
-                    await continue_btn.click()
-                await page.wait_for_timeout(3000)
+                # Submit Step 1
+                await page.locator("button[type='submit']").click()
+                await page.wait_for_timeout(2000)
 
                 # 5. Fill password
-                pw = await page.wait_for_selector("#basic_password, input[type='password']", timeout=15000)
-                if pw:
-                    await pw.click(force=True)
-                    await page.keyboard.type(password, delay=20)
-                    await page.wait_for_timeout(300)
-                    btn2 = await page.query_selector("button:has-text('Continue')")
-                    if btn2:
-                        await btn2.click()
-                await page.wait_for_timeout(3500)
+                pw = await page.wait_for_selector("#basic_password", state="visible", timeout=15000)
+                await pw.fill(password)
+                await page.wait_for_timeout(300)
+
+                # Submit Step 2
+                await page.locator("button[type='submit']").click()
+                await page.wait_for_timeout(3000)
 
                 # 6. Solve captcha
+                c.print("  [yellow]![/] Menunggu tombol verifikasi captcha...")
                 try:
-                    verify_el = await page.wait_for_selector("#captcha-element, #aliyunCaptcha-captcha-body, :has-text('Click to verify')", timeout=15000)
-                    if verify_el and await verify_el.is_visible():
-                        c.print("  [yellow]![/] Slider captcha terdeteksi, memecahkan lokal...")
-                        await verify_el.click()
-                        await page.wait_for_timeout(2500)
-                        solved = await solve_slider_local(page, max_attempts=CAPTCHA_ATTEMPTS, console=c)
-                        if not solved:
-                            c.print("  [red]FAIL[/] Gagal menyelesaikan captcha")
-                            return None
-                        await page.wait_for_timeout(4000)
-                except Exception:
-                    pass
+                    v_btn = page.locator("text=Click to verify").or_(page.locator("#captcha-element")).or_(page.locator("#aliyunCaptcha-captcha-body"))
+                    await v_btn.first.wait_for(timeout=8000)
+                    await v_btn.first.click()
+                    await page.wait_for_timeout(2000)
+                    solved = await solve_slider_local(page, max_attempts=CAPTCHA_ATTEMPTS, console=c)
+                    if not solved:
+                        c.print("  [red]FAIL[/] Gagal menyelesaikan captcha")
+                        return None
+                    await page.wait_for_timeout(3500)
+                except Exception as e:
+                    c.print(f"  [red]DEBUG[/] Captcha wait error: {e}")
+                    c.print(f"  [red]DEBUG[/] URL: {page.url}")
 
                 # 7. OTP
                 c.print("  [dim]Step 4: Menunggu kode OTP dari inbox...[/]")
-                messages = await tempmail.wait_for_messages(email, max_wait=120, interval=4)
+                messages = await tempmail.wait_for_messages(email, max_wait=45, interval=2)
                 if not messages:
                     c.print("  [red]FAIL[/] Timeout menunggu OTP")
                     return None
@@ -202,56 +190,34 @@ class CreatorManager:
 
                 c.print(f"  [green]OK[/] PAT Berhasil: [bold green]{pat_token[:16]}...[/]" if pat_token else "  [dim]PAT: (kosong)[/]")
 
-                # Step 5b: Dwell manusiawi — biar sistem deteksi "user asli"
-                # (hipotesis: trial Pro diberikan ke akun yang perilakunya organik)
-                try:
-                    c.print("  [dim]Step 5b: Dwell manusiawi (mouse/scroll/jeda)...[/]")
-                    import random as _r
-                    await page.mouse.move(_r.randint(200, 800), _r.randint(150, 500))
-                    for _ in range(_r.randint(3, 6)):
-                        await page.mouse.move(_r.randint(100, 1100), _r.randint(100, 600),
-                                              steps=_r.randint(8, 20))
-                        await page.wait_for_timeout(_r.randint(600, 1800))
-                        await page.evaluate(f"window.scrollBy(0, {_r.randint(80, 300)})")
-                        await page.wait_for_timeout(_r.randint(400, 1200))
-                    # jeda organik sebelum lanjut
-                    await page.wait_for_timeout(_r.randint(4000, 9000))
-                    # buka halaman usage/pricing seperti user asli (memicu evaluation)
-                    for path in ["/pricing", "/account/usage"]:
-                        try:
-                            await page.goto(f"https://qoder.com{path}",
-                                            wait_until="domcontentloaded", timeout=20000)
-                            await page.wait_for_timeout(_r.randint(2500, 5000))
-                            await page.mouse.move(_r.randint(300, 900), _r.randint(200, 500),
-                                                  steps=_r.randint(10, 25))
-                        except Exception:
-                            pass
-                    c.print("  [dim]  dwell selesai[/]")
-                except Exception:
-                    pass
+                # Step 5b: Micro-dwell
+                await page.wait_for_timeout(1500)
 
-                # Step 5c: Coba trigger claim trial onboarding via web session
-                try:
-                    c.print("  [dim]Step 5c: Triggering web onboarding trial / claim...[/]")
-                    await page.evaluate('''async () => {
-                        try {
-                            await fetch('/api/v1/me/trial', { method: 'POST', credentials: 'include' });
-                            await fetch('/api/v2/activity/claim?activityId=new_user_trial', { method: 'POST', credentials: 'include' });
-                        } catch(e) {}
-                    }''')
-                except Exception:
-                    pass
-
-                # Step 5d: Client Device Flow (/device/selectAccounts)
+                # Step 5c: Client Device Flow (/device/selectAccounts)
                 device_data = None
                 try:
                     device_data = await trigger_client_device_onboarding(page, console=c)
                 except Exception as e:
                     c.print(f"  [yellow]![/] Device onboarding notice: {e}")
 
+                return pat_token, device_data
             finally:
                 await context.close()
-                await browser.close()
+
+        if browser is not None:
+            exec_res = await _run_with_browser(browser)
+        else:
+            async with async_playwright() as p:
+                b = await launch_stealth_browser(p, proxy, self.headless)
+                try:
+                    exec_res = await _run_with_browser(b)
+                finally:
+                    await b.close()
+
+        if not exec_res:
+            return None
+
+        pat_token, device_data = exec_res
 
         # Step 6: Claim bonus jika aktif & PAT ada
         claim_data = None

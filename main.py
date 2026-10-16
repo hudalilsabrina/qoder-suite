@@ -37,12 +37,19 @@ def banner():
     console.print(Panel(body, box=box.HEAVY, border_style="cyan"))
 
 async def cmd_create(count: int, headless: bool, auto_claim: bool):
+    from playwright.async_api import async_playwright
+    from src.stealth import launch_stealth_browser
     manager = CreatorManager(headless=headless, console=console)
     console.print(f"[bold cyan]Membuat {count} akun Qoder...[/]")
-    for i in range(count):
-        await manager.create_account(idx=i+1, auto_claim_bonus=auto_claim)
-        if i < count - 1:
-            await asyncio.sleep(3)
+    async with async_playwright() as p:
+        browser = await launch_stealth_browser(p, headless=headless)
+        try:
+            for i in range(count):
+                await manager.create_account(idx=i+1, auto_claim_bonus=auto_claim, browser=browser)
+                if i < count - 1:
+                    await asyncio.sleep(2)
+        finally:
+            await browser.close()
 
 async def cmd_claim(pat: str):
     engine = CosyEngine()
