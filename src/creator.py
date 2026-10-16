@@ -1,5 +1,6 @@
 import asyncio
 import time
+import random
 from typing import Optional, Dict, Any
 from playwright.async_api import Page, async_playwright
 from rich.console import Console
@@ -12,6 +13,7 @@ from .stealth import create_stealth_context, launch_stealth_browser
 from .captcha import solve_slider_local
 from .pat import PATManager
 from .claim import CosyEngine
+from .device import trigger_client_device_onboarding
 
 
 def _referral_hook_js(code: str) -> str:
@@ -88,7 +90,8 @@ class CreatorManager:
         c.print("  [dim]Step 1: Mengambil disposable email dari Tempik...[/]")
         tempmail = TempikClient()
         try:
-            email = tempmail.create_inbox()
+            # websurf.web.id has clean IP deliverability and delivers Qoder OTP within 2-3s
+            email = tempmail.create_inbox(domain="websurf.web.id")
         except Exception as e:
             c.print(f"  [red]FAIL[/] Gagal mengambil temp mail: {e}")
             write_log(f"[{idx}] Tempmail error: {e}", "ERROR")
@@ -144,26 +147,30 @@ class CreatorManager:
                 await page.wait_for_timeout(3000)
 
                 # 5. Fill password
-                pw = await page.query_selector("#basic_password")
+                pw = await page.wait_for_selector("#basic_password, input[type='password']", timeout=15000)
                 if pw:
                     await pw.click(force=True)
                     await page.keyboard.type(password, delay=20)
+                    await page.wait_for_timeout(300)
                     btn2 = await page.query_selector("button:has-text('Continue')")
                     if btn2:
                         await btn2.click()
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(3500)
 
                 # 6. Solve captcha
-                verify_el = await page.query_selector("#aliyunCaptcha-captcha-body, button:has-text('Click to verify')")
-                if verify_el and await verify_el.is_visible():
-                    c.print("  [yellow]![/] Slider captcha terdeteksi, memecahkan lokal...")
-                    await verify_el.click()
-                    await page.wait_for_timeout(2000)
-                    solved = await solve_slider_local(page, max_attempts=CAPTCHA_ATTEMPTS, console=c)
-                    if not solved:
-                        c.print("  [red]FAIL[/] Gagal menyelesaikan captcha")
-                        return None
-                    await page.wait_for_timeout(4000)
+                try:
+                    verify_el = await page.wait_for_selector("#captcha-element, #aliyunCaptcha-captcha-body, :has-text('Click to verify')", timeout=15000)
+                    if verify_el and await verify_el.is_visible():
+                        c.print("  [yellow]![/] Slider captcha terdeteksi, memecahkan lokal...")
+                        await verify_el.click()
+                        await page.wait_for_timeout(2500)
+                        solved = await solve_slider_local(page, max_attempts=CAPTCHA_ATTEMPTS, console=c)
+                        if not solved:
+                            c.print("  [red]FAIL[/] Gagal menyelesaikan captcha")
+                            return None
+                        await page.wait_for_timeout(4000)
+                except Exception:
+                    pass
 
                 # 7. OTP
                 c.print("  [dim]Step 4: Menunggu kode OTP dari inbox...[/]")
@@ -179,27 +186,11 @@ class CreatorManager:
                 c.print(f"  [green]OK[/] Kode OTP didapat: [bold green]{otp}[/]")
 
                 # Fill OTP
-                otp_inputs = await page.query_selector_all("input.ant-otp-input")
-                if len(otp_inputs) >= 6:
-                    await otp_inputs[0].click()
-                    await page.wait_for_timeout(200)
-                    await page.keyboard.type(otp, delay=80)
-                    await page.wait_for_timeout(1500)
-                else:
-                    all_inputs = await page.query_selector_all('input:not([type="hidden"])')
-                    if all_inputs:
-                        await all_inputs[0].click()
-                        await page.keyboard.type(otp, delay=80)
-                    else:
-                        await page.keyboard.type(otp, delay=80)
-
-                # Submit OTP
-                for sel in ['button:has-text("Create account")', 'button:has-text("Verify")', 'button:has-text("Sign up")', 'button[type="submit"]']:
-                    el = await page.query_selector(sel)
-                    if el and await el.is_visible():
-                        await el.click()
-                        break
-                await page.wait_for_timeout(8000)
+                otp_input = await page.wait_for_selector("input.ant-input, input.ant-otp-input, input[type='text']", timeout=15000)
+                await otp_input.click()
+                await page.keyboard.type(otp, delay=70)
+                await page.keyboard.press("Enter")
+                await page.wait_for_timeout(6000)
 
                 # 8. Create PAT
                 c.print("  [dim]Step 5: Generate Personal Access Token (PAT)...[/]")
@@ -251,6 +242,13 @@ class CreatorManager:
                 except Exception:
                     pass
 
+                # Step 5d: Client Device Flow (/device/selectAccounts)
+                device_data = None
+                try:
+                    device_data = await trigger_client_device_onboarding(page, console=c)
+                except Exception as e:
+                    c.print(f"  [yellow]![/] Device onboarding notice: {e}")
+
             finally:
                 await context.close()
                 await browser.close()
@@ -271,6 +269,7 @@ class CreatorManager:
             "password": password,
             "pat_token": pat_token,
             "pat_valid": bool(pat_token),
+            "device_data": device_data,
             "claim_data": claim_data,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
